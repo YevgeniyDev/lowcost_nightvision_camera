@@ -41,7 +41,7 @@ Both programs implement the same enhancement pipeline:
 2. **Grayscale Conversion**
 3. **CLAHE (Contrast Limited Adaptive Histogram Equalization)**
 4. **Gaussian Smoothing (3×3)**
-5. **Laplacian Sharpening (Moderate)**
+5. **3×3 spatial sharpening filter (unsharp-like kernel)**
 6. **Brightness Boosting +25%**
 
 This pipeline is tailored for real-time low-light visibility, providing a stable night vision output.
@@ -199,7 +199,7 @@ Ensure **VPN is OFF** on client devices and Jetson + HoloLens are on the **same 
 ```
 /project
  ├── night_vision.cpp              # Main real-time streaming system
- ├── night_vision_demo.cpp         # Visualization / pipeline testing
+ ├── vision_test.cpp         # Visualization / pipeline testing
  ├── MJPEGHandler.cs               # Unity MJPEG parser
  ├── MJPEGStreamReader.cs          # Unity frame renderer
  ├── README.md                     # Documentation
