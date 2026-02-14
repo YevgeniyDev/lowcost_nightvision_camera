@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
+#include <chrono>
 
 // --- GLOBAL SHARED RESOURCES ---
 cv::Mat globalFrame;
@@ -16,9 +17,9 @@ std::atomic<bool> isRunning(true);
 
 // ================== MJPEG CLIENT HANDLER ==================
 void handleClient(int clientSock) {
-    // Read and ignore HTTP request (we don't care about the URL/path)
+    // Read and ignore HTTP request
     char buffer[1024];
-    int n = recv(clientSock, buffer, sizeof(buffer)-1, 0);
+    int n = recv(clientSock, buffer, sizeof(buffer) - 1, 0);
     if (n <= 0) {
         close(clientSock);
         return;
@@ -44,13 +45,7 @@ void handleClient(int clientSock) {
         cv::Mat img;
         {
             std::lock_guard<std::mutex> lock(frameMutex);
-            if (globalFrame.empty()) {
-                // no frame yet
-                // small sleep outside of critical section
-                ;
-            } else {
-                img = globalFrame.clone();
-            }
+            if (!globalFrame.empty()) img = globalFrame.clone();
         }
 
         if (img.empty()) {
@@ -93,9 +88,7 @@ void mjpegServer(int port) {
         return;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET,
-                   SO_REUSEADDR | SO_REUSEPORT,
-                   &opt, sizeof(opt)) < 0) {
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
         perror("setsockopt");
         close(server_fd);
         return;
@@ -103,7 +96,7 @@ void mjpegServer(int port) {
 
     std::memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);  // listen on all interfaces
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(port);
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -128,13 +121,67 @@ void mjpegServer(int port) {
             continue;
         }
 
-        // Each client in its own thread
         std::thread t(handleClient, new_socket);
         t.detach();
     }
 
     close(server_fd);
     std::cout << "[MJPEG] Server stopped.\n";
+}
+
+// ================== CLI OPTIONS ==================
+struct Options {
+    bool recordMode = false;
+    std::string recordPath = "";
+    int recordSeconds = 20;           // default duration
+    bool streamEnhancedWhileRecord = false; // if false, stream raw grayscale while recording
+    int port = 8080;
+    int camIndex = 0;
+};
+
+static void printUsage(const char* prog) {
+    std::cout <<
+        "Usage:\n"
+        "  " << prog << "                  # enhance + stream\n"
+        "  " << prog << " --record out.avi  # record RAW dataset + stream preview\n"
+        "Options:\n"
+        "  --record <path>         Record raw (rotated) BGR frames to AVI (MJPG codec)\n"
+        "  --seconds <N>           Recording duration in seconds (default: 20)\n"
+        "  --stream-enhanced       While recording, stream enhanced output instead of raw grayscale\n"
+        "  --port <P>              MJPEG server port (default: 8080)\n"
+        "  --cam <index>           Camera index (default: 0)\n";
+}
+
+static Options parseArgs(int argc, char** argv) {
+    Options opt;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--record" && i + 1 < argc) {
+            opt.recordMode = true;
+            opt.recordPath = argv[++i];
+        } else if (a == "--seconds" && i + 1 < argc) {
+            opt.recordSeconds = std::max(1, std::stoi(argv[++i]));
+        } else if (a == "--stream-enhanced") {
+            opt.streamEnhancedWhileRecord = true;
+        } else if (a == "--port" && i + 1 < argc) {
+            opt.port = std::stoi(argv[++i]);
+        } else if (a == "--cam" && i + 1 < argc) {
+            opt.camIndex = std::stoi(argv[++i]);
+        } else if (a == "--help" || a == "-h") {
+            printUsage(argv[0]);
+            std::exit(0);
+        } else {
+            std::cerr << "Unknown arg: " << a << "\n";
+            printUsage(argv[0]);
+            std::exit(1);
+        }
+    }
+    if (opt.recordMode && opt.recordPath.empty()) {
+        std::cerr << "Error: --record requires a path\n";
+        printUsage(argv[0]);
+        std::exit(1);
+    }
+    return opt;
 }
 
 // ================== NIGHT VISION LOGIC CLASS ==================
@@ -144,38 +191,64 @@ private:
     cv::Ptr<cv::CLAHE> clahe;
     cv::Mat sharpen_kernel;
 
-    // CLAHE Clip Limit
+    // CLAHE settings (your defaults)
     const double CLAHE_CLIP_LIMIT = 4.0;
     const cv::Size CLAHE_TILE_GRID = cv::Size(8, 8);
 
+    // Options
+    Options opt;
+
+    // Recorder
+    cv::VideoWriter writer;
+    bool writerReady = false;
+    std::chrono::steady_clock::time_point recordStart;
+
 public:
-    NightVisionCam(int src) {
-        // Prefer V4L2 backend (more stable on Jetson)
-        cap.open(src, cv::CAP_V4L2);
+    explicit NightVisionCam(const Options& options) : opt(options) {
+        cap.open(opt.camIndex, cv::CAP_V4L2);
 
         cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
         cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
         cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
         if (!cap.isOpened()) {
-            std::cerr << "Error: Could not open camera." << std::endl;
-            exit(-1);
+            std::cerr << "Error: Could not open camera.\n";
+            std::exit(-1);
         }
 
-        // Initialize CLAHE
         clahe = cv::createCLAHE(CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID);
 
-        // --- SHARPENING KERNEL (same as you) ---
         sharpen_kernel = (cv::Mat_<float>(3, 3) <<
                            0, -1,  0,
                           -1,  5, -1,
                            0, -1,  0);
+
+        if (opt.recordMode) {
+            // MJPG AVI is simple + portable for OpenCV
+            int fourcc = cv::VideoWriter::fourcc('M','J','P','G');
+            double fps = 30.0; // keep consistent with your stream pacing
+            writer.open(opt.recordPath, fourcc, fps, cv::Size(640, 480), true);
+            if (!writer.isOpened()) {
+                std::cerr << "Error: Could not open VideoWriter at " << opt.recordPath << "\n";
+                std::exit(-1);
+            }
+            writerReady = true;
+            recordStart = std::chrono::steady_clock::now();
+            std::cout << "🎥 Recording RAW dataset to: " << opt.recordPath
+                      << " (" << opt.recordSeconds << "s)\n";
+            if (opt.streamEnhancedWhileRecord) {
+                std::cout << "📡 Streaming: ENHANCED preview while recording\n";
+            } else {
+                std::cout << "📡 Streaming: RAW GRAYSCALE preview while recording\n";
+            }
+        }
     }
 
     void run() {
         cv::Mat frame, gray, equalized, denoised, sharp, boosted;
 
-        std::cout << "SUCCESS: Night Vision (Clean Grayscale) Started!" << std::endl;
+        std::cout << "✅ Night Vision Started. Mode: "
+                  << (opt.recordMode ? "RECORD" : "NORMAL") << "\n";
 
         while (isRunning) {
             cap >> frame;
@@ -185,43 +258,64 @@ public:
                 continue;
             }
 
-            // 1. Rotate
+            // 1) Rotate (keep same as your pipeline)
             cv::rotate(frame, frame, cv::ROTATE_180);
 
-            // 2. Grayscale
+            // If recording: write RAW rotated BGR frame (no enhancement)
+            if (opt.recordMode && writerReady) {
+                writer.write(frame);
+
+                // Stop after N seconds
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - recordStart).count();
+                if (elapsed >= opt.recordSeconds) {
+                    std::cout << "⏹ Finished recording (" << opt.recordSeconds << "s). Stopping.\n";
+                    isRunning = false; // will stop server too
+                }
+            }
+
+            // For streaming preview, choose raw gray or enhanced while recording
+            if (opt.recordMode && !opt.streamEnhancedWhileRecord) {
+                cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+                {
+                    std::lock_guard<std::mutex> lock(frameMutex);
+                    gray.copyTo(globalFrame);
+                }
+                // keep loop timing ~30 FPS
+                usleep(1000); // small sleep; MJPEG sender controls ~30fps anyway
+                continue;
+            }
+
+            // ---- Your enhancement pipeline ----
             cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-
-            // 3. CLAHE (Contrast)
             clahe->apply(gray, equalized);
-
-            // 4. Denoise
             cv::GaussianBlur(equalized, denoised, cv::Size(3, 3), 0);
-
-            // 5. Sharpen (Moderate)
             cv::filter2D(denoised, sharp, -1, sharpen_kernel);
-
-            // 6. Brightness Boost (+25%)
-            // Alpha = 1.25 (gain), Beta = 0 (offset)
             cv::convertScaleAbs(sharp, boosted, 1.25, 0);
 
-            // 7. Update Stream (single-channel grayscale, JPEG handles it)
+            // Update stream
             {
                 std::lock_guard<std::mutex> lock(frameMutex);
                 boosted.copyTo(globalFrame);
             }
+
+            // optional small sleep to reduce CPU usage
+            usleep(1000);
         }
     }
 };
 
-int main() {
-    // Start MJPEG server in background
-    std::thread serverThread(mjpegServer, 8080);
+int main(int argc, char** argv) {
+    Options opt = parseArgs(argc, argv);
 
-    // Start camera + night vision processing (blocking)
-    NightVisionCam nv(0);
+    // Start MJPEG server in background
+    std::thread serverThread(mjpegServer, opt.port);
+
+    // Start camera + processing (blocking)
+    NightVisionCam nv(opt);
     nv.run();
 
-    // If run() ever exits:
+    // Cleanup
     isRunning = false;
     if (serverThread.joinable())
         serverThread.join();
