@@ -41,7 +41,7 @@ Both programs implement the same enhancement pipeline:
 2. **Grayscale Conversion**
 3. **CLAHE (Contrast Limited Adaptive Histogram Equalization)**
 4. **Gaussian Smoothing (3×3)**
-5. **Laplacian Sharpening (Moderate)**
+5. **3×3 spatial sharpening filter (unsharp-like kernel)**
 6. **Brightness Boosting +25%**
 
 This pipeline is tailored for real-time low-light visibility, providing a stable night vision output.
