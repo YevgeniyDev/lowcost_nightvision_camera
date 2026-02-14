@@ -199,7 +199,7 @@ Ensure **VPN is OFF** on client devices and Jetson + HoloLens are on the **same 
 ```
 /project
  ├── night_vision.cpp              # Main real-time streaming system
- ├── night_vision_demo.cpp         # Visualization / pipeline testing
+ ├── vision_test.cpp         # Visualization / pipeline testing
  ├── MJPEGHandler.cs               # Unity MJPEG parser
  ├── MJPEGStreamReader.cs          # Unity frame renderer
  ├── README.md                     # Documentation
