@@ -1,217 +1,324 @@
----
+# Low-Cost Lightweight Real-Time Night Vision VR System
 
-# Low-Cost Night Vision Camera
+This repository contains a lightweight **real-time low-light / NIR enhancement** pipeline written in **C++ (OpenCV)**, a simple **MJPEG streaming server** (HTTP multipart), and a **Unity 2020 client** (tested with HoloLens 2) that displays the stream.
 
-### ROBT310 — Image Processing
+The focus is **real-time feasibility on embedded or low-power devices**. The implementation benchmarks classical pipelines (CLAHE, bilateral/NLM+CLAHE, Retinex SSR variants) and two proposed pipelines, and produces:
 
-### Nazarbayev University · SEDS · December 2025
+* **CSV benchmarking results**
+* **per-method AVI recordings**
+* **combined AVI** (with method label overlay)
+* **snapshots** at fixed timestamps (useful for paper figures)
+* **live MJPEG stream** for remote visualization (Unity/HoloLens 2)
 
----
+# Authors
 
-## 🛰 PROJECT OVERVIEW
-
-This repository contains a complete, real-time **night-vision enhancement and streaming system** implemented on an NVIDIA Jetson and integrated with Unity on HoloLens 2.
-
-The system includes:
-
-* **Fisrt C++ applications** for capturing & enhancing the camera feed and streaming it with the MJPEG stream server
-* **Second C++ application** for showing the image preprocessing pipeline's effect on the initial image via 6 different streams combined into one
-* **Unity C# scripts** for streaming into HoloLens 2 via HTTP
-
----
-
-# 👥 TEAM MEMBERS
-
-1. **Mirat Serik**
+1. **Zaki Al-Farabi**
 2. **Yevgeniy Dikun**
-3. **Yermek Zhakupov**
-4. **Zaki Al-Farabi**
+3. **Mirat Serik**
+4. **Yermek Zhakupov**
 
-* Course: **ROBT310 — Image Processing**
-* Instructor: Zhanat Kappassov
-* Date: **December 2025**
+PI: **Zhanat Kappassov**
 
----
+Co-PI: **Ilyas Tursunbek**
 
-# 📷 NIGHT VISION PIPELINE
+## Repository layout
 
-Both programs implement the same enhancement pipeline:
-
-1. **180° Rotation**
-2. **Grayscale Conversion**
-3. **CLAHE (Contrast Limited Adaptive Histogram Equalization)**
-4. **Gaussian Smoothing (3×3)**
-5. **3×3 spatial sharpening filter (unsharp-like kernel)**
-6. **Brightness Boosting +25%**
-
-This pipeline is tailored for real-time low-light visibility, providing a stable night vision output.
-
----
-
-# 🚀 PROGRAM 1 — `night_vision.cpp`
-
-### (Final Real-Time Streaming System for HoloLens / Unity)
-
-This is the primary deployment program.
-
-## ✔ Features
-
-* Real-time adaptive night-vision enhancement
-* MJPEG streaming server on
-* Multi-client support (browser, Unity, HoloLens)
-* Thread-safe design (camera loop separated from network threads)
-
-## ✔ Build
-
-```bash
-g++ -std=c++17 night_vision.cpp -o night_vision \
-`pkg-config --cflags --libs opencv4` -lpthread
+```
+.
+├── cpp/
+│   └── night_vision_V2.cpp
+├── unity/
+│   ├── MJPEGStreamReader.cs
+│   └── MJPEGHandler.cs
+├── samples/
+│   ├── results_scene100.csv
+│   ├── combined_scene100.avi
+│   ├── videos_scene100/
+│   ├── snaps_scene100/
+│   └── ...
+└── README.md
 ```
 
-## ✔ Run
+## Methodology
+
+### C++ code implementation (night_vision_V2.cpp)
+
+### 1) Captures frames from a camera in real-time
+
+* Default camera: `--cam 0`
+* Fixed capture size: **640×480**
+* Uses `cv::CAP_V4L2` and sets a small buffer to reduce latency.
+
+### 2) Applies enhancement methods in sequence (time-sliced benchmarking)
+
+Each method runs for `--seconds-per-method` seconds. During the first `--warmup` seconds, the program **does not log metrics** (to reduce bias from auto-exposure settling).
+
+Methods implemented:
+
+1. `RawGray`
+2. `CLAHE`
+3. `Bilateral+CLAHE`
+4. `NLM+CLAHE`
+5. `RetinexSSR`
+6. `RetinexSSR_Pctl`
+7. `Proposed`
+8. `Proposed_V2`
+
+### 3) Computes quality + runtime metrics
+
+Logged per method:
+
+* `avg_ms_per_frame`
+* `fps`
+* `entropy`
+* `edge_strength` (mean gradient magnitude)
+* `laplacian_var` (sharpness proxy)
+* `rms_contrast`
+* `mean_intensity` (helps detect near-black runs)
+* `frames` (number of frames logged)
+
+### 4) Creates videos, snapshots and CSVs
+
+Depending on flags, it writes:
+
+* Per-method videos: `videos_scene<N>/<MethodName>.avi`
+* Combined video (with method label overlay): `combined_scene<N>.avi`
+* Snapshots: `snaps_scene<N>/snap_<MethodName>_t<X>.png`
+* CSV results: `results_scene<N>.csv`
+
+Where N - object distance from camera and X - exact second the snapshot was taken.
+
+### 5) Streams the *current* processed frame via MJPEG over HTTP
+
+* Default server: `http://<host-ip>:8080/`
+* Boundary: `boundarydonotcross`
+* JPEG quality ≈ 50
+* ~30 fps send pacing (simple `usleep(33000)`)
+
+Unity/HoloLens 2 can connect to this stream over Wi-Fi LAN.
+
+## Build
+
+### Dependencies
+
+* Linux
+* C++17 compiler (g++ recommended)
+* OpenCV (via `pkg-config opencv4`)
+* pthread (standard on Linux)
+
+Install necessary dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libopencv-dev v4l-utils
+```
+
+### Compile (single-file build)
+
+From repo root:
+
+```bash
+g++ -std=c++17 cpp/night_vision_V2.cpp -o night_vision \
+  $(pkg-config --cflags --libs opencv4) -lpthread
+```
+
+## Run
+
+### Minimal run (creates defaults)
 
 ```bash
 ./night_vision
 ```
 
-## ✔ View stream
+Command-line options (defaults):
 
-Retrieve Jetson IP:
+  ```bash
+  --seconds-per-method N     Default: 20
+                             Duration (in seconds) to run each enhancement method.
+
+  --warmup N                 Default: 2
+                             Warm-up seconds per method (metrics are NOT logged during warmup).
+
+  --out results.csv          Output CSV filename for metrics.
+
+  --port 8080                Default: 8080
+                             MJPEG streaming server port. Stream URL:
+                             http://<host-ip>:8080/
+
+  --cam 0                    Default: 0
+                             Camera index (V4L2), e.g., /dev/video0.
+
+  --record-per-method 0/1    Default: 1
+                             Save per-method AVI files (one video per method).
+
+  --record-combined 0/1      Default: 1
+                             Save a single combined AVI with an on-frame method label.
+
+  --video-dir DIR            Default: videos
+                             Output directory for per-method videos.
+
+  --combined-video FILE      Default: combined_run.avi
+                             Filename for the combined video.
+
+  --snapshots 0/1            Default: 1
+                             Save snapshot PNGs at fixed timestamps per method.
+
+  --snapshot-dir DIR         Default: snaps
+                             Output directory for snapshots.
+
+  --preexp 0/1               Default: 0
+                             Optional pre-normalization of mean intensity
+                             (helps avoid near-black runs under auto-exposure).
+```
+
+### Sample run
+Example for **100 cm** object distance:
 
 ```bash
-ip -4 addr show wlan0 | grep inet | awk '{print $2}' | cut -d/ -f1
+./night_vision \
+  --seconds-per-method 20 \
+  --warmup 2 \
+  --cam 0 \
+  --port 8080 \
+  --out results_scene100.csv \
+  --video-dir videos_scene100 \
+  --combined-video combined_scene100.avi \
+  --snapshots 1 \
+  --snapshot-dir snaps_scene100 \
+  --record-per-method 1 \
+  --record-combined 1 \
+  --preexp 0
 ```
 
-Then open:
+## Output files and folders
+
+After a run, you typically get:
+
+### CSV (benchmark table)
+
+Example:
+
+* `results_scene100.csv`
+
+Columns:
 
 ```
-http://<jetson-ip>:8080/
+method,avg_ms_per_frame,fps,entropy,edge_strength,laplacian_var,rms_contrast,mean_intensity,frames
 ```
 
----
+### Per-method videos (grayscale MJPEG AVI)
 
-# 🧪 PROGRAM 2 — `night_vision_demo.cpp`
+Example directory:
 
-### (Pipeline Visualization / Educational Mode)
+* `videos_scene100/`
 
-This program outputs a **3×2 grid**, showing:
+  * `RawGray.avi`
+  * `CLAHE.avi`
+  * `Bilateral_CLAHE.avi`
+  * `NLM_CLAHE.avi`
+  * `RetinexSSR.avi`
+  * `RetinexSSR_Pctl.avi`
+  * `Proposed.avi`
+  * `ProposedV2.avi`
 
-| Grid Cell | Visualization       |
-| --------- | ------------------- |
-| 1         | Raw grayscale input |
-| 2         | CLAHE enhanced      |
-| 3         | Denoised            |
-| 4         | Sharpened           |
-| 5         | Brightness-boosted  |
-| 6         | Final output        |
+### Combined run video
 
-Useful for demonstrations and parameter tuning.
+Example:
 
-## ✔ Build
+* `combined_scene100.avi`
 
-```bash
-g++ -std=c++17 night_vision_demo.cpp -o night_vision_demo \
-`pkg-config --cflags --libs opencv4` -lpthread
-```
+This file records the processed frame **with an on-frame label**:
+`<MethodName> | t=<elapsed>s`
 
-## ✔ Run
+### Snapshots
 
-```bash
-./night_vision_demo
-```
+Example directory:
 
----
+* `snaps_scene100/`
 
-# 🌐 MJPEG STREAMING SERVER
+  * `snap_Proposed_t3.png`
+  * `snap_Proposed_t8.png`
+  * `snap_Proposed_t15.png`
+  * and similarly for each method
 
-### Runs inside both programs
+Snapshot times are currently hardcoded:
 
-* accessible at: **http://jetson-ip:8080/**
-* format: `multipart/x-mixed-replace`
-* boundary: `--boundarydonotcross`
-* JPEG quality: ~50%
-* ~30 FPS output
+* `{3, 8, 15}` seconds into each method window
 
----
+## Live streaming (MJPEG)
 
-# 🎮 UNITY / HOLOLENS INTEGRATION
+The program starts an MJPEG server in a background thread.
 
-Unity reads the MJPEG stream and displays frames inside the scene.
+* Default URL:
 
-Two scripts are included in the repository:
+  * `http://<your-linux-ip>:8080/`
 
-### **1. `MJPEGHandler.cs`**
+## Unity 2020 (HoloLens 2) client setup
 
-* Custom `DownloadHandlerScript`
-* Parses MJPEG multipart stream
-* Extracts JPEG frames
-* Emits frames via `OnFrameComplete` event
+This repo includes:
 
-### **2. `MJPEGStreamReader.cs`**
+* `unity/MJPEGStreamReader.cs`
+* `unity/MJPEGHandler.cs`
 
-* Connects to Jetson MJPEG server
-* Receives frames from `MJPEGHandler`
-* Converts JPEG bytes to `Texture2D`
-* Displays output on a Unity `RawImage`
-* Fully compatible with **HoloLens 2 (UWP)**
+### 1) Create a simple UI scene
 
-## ✔ Setup in Unity (Steps)
+1. Create a new Unity 2020 project.
+2. In the Scene:
 
-1. Create a **Canvas**
-2. Add a **RawImage** UI element
-3. Add `MJPEGStreamReader.cs` to a GameObject
-4. Assign the RawImage
-5. Set the Jetson stream URL:
+   * `GameObject -> UI -> Canvas`
+   * `GameObject -> UI -> RawImage`
+3. Resize the RawImage to fill the Canvas (optional).
 
-```
-http://<jetson-ip>:8080/
-```
+### 2) Add scripts
 
-6. Build for **UWP**
-7. Deploy to **HoloLens 2 via Visual Studio**
+1. Create a folder `Assets/Scripts/`.
+2. Copy both C# scripts into it:
 
-You now receive the real-time night-vision feed inside HoloLens.
+   * `MJPEGStreamReader.cs`
+   * `MJPEGHandler.cs`
 
----
+### 3) Add a controller object
 
-# 🔧 JETSON NOTES
+1. `GameObject -> Create Empty` and name it e.g. `MJPEGClient`.
+2. Attach `MJPEGStreamReader` component to `MJPEGClient`.
+3. Drag the `RawImage` object into the `outputImage` field in Inspector.
+4. Set `streamURL` to your Linux host address, e.g.:
 
-### Recommended for stability:
+   * `http://192.168.1.25:8080/`
 
-Disable USB autosuspend (optional):
+### 4) Run
 
-```bash
-sudo sh -c "echo -1 > /sys/module/usbcore/parameters/autosuspend"
-```
+* Press Play in Unity Editor (for a quick test on PC).
+* For HoloLens 2:
 
-Allow MJPEG server port:
+  * Build using UWP workflow (standard HoloLens procedure).
+  * Ensure the device is on the same LAN and can reach the Linux host.
 
-```bash
-sudo ufw allow 8080
-```
+## Networking tips (HoloLens 2 ↔ Linux PC)
 
-Ensure **VPN is OFF** on client devices and Jetson + HoloLens are on the **same Wi-Fi network**.
+Most issues are basic connectivity:
 
----
+* Make sure both devices are on the **same Wi-Fi network**.
+* Confirm the Linux device IP:
 
-# 📁 PROJECT STRUCTURE
+  ```bash
+  ip a
+  ```
+* Confirm port 8080 is listening:
 
-```
-/project
- ├── night_vision.cpp              # Main real-time streaming system
- ├── vision_test.cpp         # Visualization / pipeline testing
- ├── MJPEGHandler.cs               # Unity MJPEG parser
- ├── MJPEGStreamReader.cs          # Unity frame renderer
- ├── README.md                     # Documentation
-```
+  ```bash
+  ss -lntp | grep 8080
+  ```
+* If you use a firewall, allow the port (Ubuntu example):
 
----
+  ```bash
+  sudo ufw allow 8080/tcp
+  ```
+  
+## License
 
-# 🏁 CONCLUSION
+Not chosen yet.
 
-This project integrates:
+## Citation
 
-* Embedded Jetson-based imaging with image preprocessing
-* Custom MJPEG networking
-* Unity and HoloLens real-time AR visualization
-
+If you use this code in academic work, please cite the associated paper.
