@@ -25,8 +25,6 @@ Co-PI: **Ilyas Tursunbek**
 
 ```
 .
-├── cpp/
-│   └── night_vision_V2.cpp
 ├── unity/
 │   ├── MJPEGStreamReader.cs
 │   └── MJPEGHandler.cs
@@ -36,7 +34,8 @@ Co-PI: **Ilyas Tursunbek**
 │   ├── videos_scene100/
 │   ├── snaps_scene100/
 │   └── ...
-└── README.md
+└── night_vision_V2.cpp
+└──README.md
 ```
 
 ## Methodology
@@ -118,7 +117,7 @@ sudo apt install -y build-essential pkg-config libopencv-dev v4l-utils
 From repo root:
 
 ```bash
-g++ -std=c++17 cpp/night_vision_V2.cpp -o night_vision \
+g++ -std=c++17 night_vision_V2.cpp -o night_vision \
   $(pkg-config --cflags --libs opencv4) -lpthread
 ```
 
