@@ -1,29 +1,24 @@
-# Low-Cost Lightweight Real-Time Night Vision VR System
+# Consumer-Grade Near-Infrared Vision with Real-Time Edge Enhancement for Mixed-Reality Visualization
 
-This repository contains a lightweight **real-time low-light / NIR enhancement** pipeline written in **C++ (OpenCV)**, a simple **MJPEG streaming server** (HTTP multipart), and a **Unity 2020 client** (tested with HoloLens 2) that displays the stream.
+This repository contains a lightweight **near-infrared / low-light enhancement pipeline** written in **C++ using OpenCV**, a simple **MJPEG streaming server** over HTTP, and a **Unity 2020 client** tested with HoloLens 2 for head-mounted mixed-reality visualization.
 
-The focus is **real-time feasibility on embedded or low-power devices**. The implementation benchmarks classical pipelines (CLAHE, bilateral/NLM+CLAHE, Retinex SSR variants) and two proposed pipelines, and produces:
+The system is designed to evaluate the feasibility of computationally lightweight enhancement on embedded hardware while supporting wireless remote visualization. The implementation benchmarks classical enhancement methods and two lightweight pipelines introduced in the associated paper:
 
-* **CSV benchmarking results**
-* **per-method AVI recordings**
-* **combined AVI** (with method label overlay)
-* **snapshots** at fixed timestamps (useful for paper figures)
-* **live MJPEG stream** for remote visualization (Unity/HoloLens 2)
+- **LE-CLAHE** — Lightweight Edge-enhancement CLAHE
+- **LE-Retinex** — Lightweight Retinex-integrated enhancement
 
-# Authors
+The repository provides:
 
-1. **Zaki Al-Farabi**
-2. **Yevgeniy Dikun**
-3. **Mirat Serik**
-4. **Yermek Zhakupov**
-
-PI: **Zhanat Kappassov**
-
-Co-PI: **Ilyas Tursunbek**
+- **CSV benchmarking results**
+- **per-method AVI recordings**
+- **combined AVI recordings** with method labels
+- **snapshots** at fixed timestamps
+- **live MJPEG streaming**
+- **Unity/HoloLens 2 visualization scripts**
 
 ## Repository layout
 
-```
+```text
 .
 ├── unity/
 │   ├── MJPEGStreamReader.cs
@@ -34,25 +29,36 @@ Co-PI: **Ilyas Tursunbek**
 │   ├── videos_scene100/
 │   ├── snaps_scene100/
 │   └── ...
-└── night_vision_V2.cpp
-└──README.md
+├── night_vision_V2.cpp
+└── README.md
 ```
 
 ## Methodology
 
-### C++ code implementation (night_vision_V2.cpp)
+### C++ implementation
 
-### 1) Captures frames from a camera in real-time
+The main implementation is contained in:
 
-* Default camera: `--cam 0`
-* Fixed capture size: **640×480**
-* Uses `cv::CAP_V4L2` and sets a small buffer to reduce latency.
+```text
+night_vision_V2.cpp
+```
 
-### 2) Applies enhancement methods in sequence (time-sliced benchmarking)
+### 1. Camera acquisition
 
-Each method runs for `--seconds-per-method` seconds. During the first `--warmup` seconds, the program **does not log metrics** (to reduce bias from auto-exposure settling).
+The program captures frames from a camera in real time.
 
-Methods implemented:
+- Default camera index: `--cam 0`
+- Capture resolution: **640 × 480**
+- Capture backend: `cv::CAP_V4L2`
+- Capture buffer size: **1 frame**
+
+The small capture buffer is used to reduce accumulation of stale frames.
+
+### 2. Enhancement methods
+
+Each method runs for `--seconds-per-method` seconds. During the first `--warmup` seconds, metrics are not recorded in order to reduce the influence of camera exposure stabilization.
+
+Implemented methods:
 
 1. `RawGray`
 2. `CLAHE`
@@ -60,61 +66,117 @@ Methods implemented:
 4. `NLM+CLAHE`
 5. `RetinexSSR`
 6. `RetinexSSR_Pctl`
-7. `Proposed`
-8. `Proposed_V2`
+7. `Proposed` — corresponds to **LE-CLAHE** in the paper
+8. `ProposedV2` — corresponds to **LE-Retinex** in the paper
 
-### 3) Computes quality + runtime metrics
+### 3. LE-CLAHE
 
-Logged per method:
+LE-CLAHE applies the following sequence:
 
-* `avg_ms_per_frame`
-* `fps`
-* `entropy`
-* `edge_strength` (mean gradient magnitude)
-* `laplacian_var` (sharpness proxy)
-* `rms_contrast`
-* `mean_intensity` (helps detect near-black runs)
-* `frames` (number of frames logged)
+1. Grayscale conversion
+2. CLAHE
+   - clip limit: `4.0`
+   - tile grid: `8 × 8`
+3. Gaussian smoothing
+   - kernel: `3 × 3`
+4. Sharpening
+   - kernel:
 
-### 4) Creates videos, snapshots and CSVs
+```text
+ 0 -1  0
+-1  5 -1
+ 0 -1  0
+```
 
-Depending on flags, it writes:
+5. Linear intensity gain
+   - gain: `1.25`
 
-* Per-method videos: `videos_scene<N>/<MethodName>.avi`
-* Combined video (with method label overlay): `combined_scene<N>.avi`
-* Snapshots: `snaps_scene<N>/snap_<MethodName>_t<X>.png`
-* CSV results: `results_scene<N>.csv`
+The pipeline is designed to improve local contrast while maintaining low computational cost.
 
-Where N - object distance from camera and X - exact second the snapshot was taken.
+### 4. LE-Retinex
 
-### 5) Streams the *current* processed frame via MJPEG over HTTP
+LE-Retinex performs lightweight illumination normalization using:
 
-* Default server: `http://<host-ip>:8080/`
-* Boundary: `boundarydonotcross`
-* JPEG quality ≈ 50
-* ~30 fps send pacing (simple `usleep(33000)`)
+1. Downsampling to `25%` of the original width and height
+2. Illumination estimation using a `31 × 31` box filter
+3. Bilinear upsampling of the illumination estimate
+4. Retinex-like ratio correction
+5. Mean/standard-deviation normalization using `k = 2.5`
+6. Mild CLAHE
+   - clip limit: `2.0`
+   - tile grid: `8 × 8`
+7. Median filtering
+   - kernel: `3 × 3`
+8. Detail-gated unsharp enhancement
+   - Gaussian sigma: `1.0`
+   - detail threshold: `6`
+   - sharpening gain: `1.0`
 
-Unity/HoloLens 2 can connect to this stream over Wi-Fi LAN.
+### 5. Runtime and image statistics
+
+For each method, the implementation records:
+
+- `avg_ms_per_frame`
+- `fps`
+- `entropy`
+- `edge_strength`
+- `laplacian_var`
+- `rms_contrast`
+- `mean_intensity`
+- `frames`
+
+The reported `fps` value is derived from average processing time:
+
+```text
+1000 / avg_ms_per_frame
+```
+
+It therefore represents **algorithmic processing throughput**, not the physical camera frame rate or end-to-end streaming rate.
+
+### 6. Video, snapshot, and CSV output
+
+Depending on the selected flags, the program writes:
+
+- Per-method videos: `videos_scene<N>/<MethodName>.avi`
+- Combined labeled video: `combined_scene<N>.avi`
+- Snapshots: `snaps_scene<N>/snap_<MethodName>_t<X>.png`
+- CSV results: `results_scene<N>.csv`
+
+where:
+
+- `N` is the camera-to-target distance
+- `X` is the snapshot time within the method window
+
+### 7. MJPEG streaming
+
+The current processed frame is streamed through an HTTP MJPEG server.
+
+- Default port: `8080`
+- JPEG quality: approximately `50`
+- Transmission pacing: approximately `30 frame/s`
+- Multipart boundary: `boundarydonotcross`
+
+The Unity/HoloLens client connects to the stream through a shared Wi-Fi network.
 
 ## Build
 
 ### Dependencies
 
-* Linux
-* C++17 compiler (g++ recommended)
-* OpenCV (via `pkg-config opencv4`)
-* pthread (standard on Linux)
+- Linux
+- C++17 compiler
+- OpenCV
+- pthread
 
-Install necessary dependencies:
+Install dependencies on Ubuntu:
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential pkg-config libopencv-dev v4l-utils
 ```
 
-### Compile (single-file build)
+### Compile
 
-From repo root:
+From the repository root:
 
 ```bash
 g++ -std=c++17 night_vision_V2.cpp -o night_vision \
@@ -123,55 +185,49 @@ g++ -std=c++17 night_vision_V2.cpp -o night_vision \
 
 ## Run
 
-### Minimal run (creates defaults)
+### Minimal run
 
 ```bash
 ./night_vision
 ```
 
-Command-line options (defaults):
+### Command-line options
 
-  ```bash
-  --seconds-per-method N     Default: 20
-                             Duration (in seconds) to run each enhancement method.
+```text
+--seconds-per-method N     Default: 20
+                           Duration of each enhancement method.
 
-  --warmup N                 Default: 2
-                             Warm-up seconds per method (metrics are NOT logged during warmup).
+--warmup N                 Default: 2
+                           Warm-up period during which metrics are not logged.
 
-  --out results.csv          Output CSV filename for metrics.
+--out results.csv          Output CSV filename.
 
-  --port 8080                Default: 8080
-                             MJPEG streaming server port. Stream URL:
-                             http://<host-ip>:8080/
+--port 8080                MJPEG server port.
 
-  --cam 0                    Default: 0
-                             Camera index (V4L2), e.g., /dev/video0.
+--cam 0                    Camera index.
 
-  --record-per-method 0/1    Default: 1
-                             Save per-method AVI files (one video per method).
+--record-per-method 0/1    Default: 1
+                           Save one AVI file per enhancement method.
 
-  --record-combined 0/1      Default: 1
-                             Save a single combined AVI with an on-frame method label.
+--record-combined 0/1      Default: 1
+                           Save a combined labeled AVI.
 
-  --video-dir DIR            Default: videos
-                             Output directory for per-method videos.
+--video-dir DIR            Output directory for per-method videos.
 
-  --combined-video FILE      Default: combined_run.avi
-                             Filename for the combined video.
+--combined-video FILE      Combined video filename.
 
-  --snapshots 0/1            Default: 1
-                             Save snapshot PNGs at fixed timestamps per method.
+--snapshots 0/1            Default: 1
+                           Save snapshots at fixed timestamps.
 
-  --snapshot-dir DIR         Default: snaps
-                             Output directory for snapshots.
+--snapshot-dir DIR         Snapshot output directory.
 
-  --preexp 0/1               Default: 0
-                             Optional pre-normalization of mean intensity
-                             (helps avoid near-black runs under auto-exposure).
+--preexp 0/1               Default: 0
+                           Optional mean-intensity pre-normalization.
 ```
 
-### Sample run
-Example for **100 cm** object distance:
+### Example run
+
+Example for a target distance of **100 cm**:
 
 ```bash
 ./night_vision \
@@ -189,135 +245,181 @@ Example for **100 cm** object distance:
   --preexp 0
 ```
 
-## Output files and folders
+## Output files
 
-After a run, you typically get:
-
-### CSV (benchmark table)
+### CSV
 
 Example:
 
-* `results_scene100.csv`
+```text
+results_scene100.csv
+```
 
 Columns:
 
-```
+```text
 method,avg_ms_per_frame,fps,entropy,edge_strength,laplacian_var,rms_contrast,mean_intensity,frames
 ```
 
-### Per-method videos (grayscale MJPEG AVI)
-
-Example directory:
-
-* `videos_scene100/`
-
-  * `RawGray.avi`
-  * `CLAHE.avi`
-  * `Bilateral_CLAHE.avi`
-  * `NLM_CLAHE.avi`
-  * `RetinexSSR.avi`
-  * `RetinexSSR_Pctl.avi`
-  * `Proposed.avi`
-  * `ProposedV2.avi`
-
-### Combined run video
+### Per-method videos
 
 Example:
 
-* `combined_scene100.avi`
+```text
+videos_scene100/
+├── RawGray.avi
+├── CLAHE.avi
+├── Bilateral_CLAHE.avi
+├── NLM_CLAHE.avi
+├── RetinexSSR.avi
+├── RetinexSSR_Pctl.avi
+├── Proposed.avi
+└── ProposedV2.avi
+```
 
-This file records the processed frame **with an on-frame label**:
-`<MethodName> | t=<elapsed>s`
+In the associated paper:
+
+- `Proposed` corresponds to **LE-CLAHE**
+- `ProposedV2` corresponds to **LE-Retinex**
+
+### Combined video
+
+Example:
+
+```text
+combined_scene100.avi
+```
+
+The combined recording contains an on-frame method label of the form:
+
+```text
+<MethodName> | t=<elapsed>s
+```
 
 ### Snapshots
 
-Example directory:
+Example:
 
-* `snaps_scene100/`
+```text
+snaps_scene100/
+├── snap_Proposed_t3.png
+├── snap_Proposed_t8.png
+├── snap_Proposed_t15.png
+└── ...
+```
 
-  * `snap_Proposed_t3.png`
-  * `snap_Proposed_t8.png`
-  * `snap_Proposed_t15.png`
-  * and similarly for each method
+Snapshot times are currently fixed at:
 
-Snapshot times are currently hardcoded:
+```text
+3, 8, and 15 seconds
+```
 
-* `{3, 8, 15}` seconds into each method window
+within each method window.
 
-## Live streaming (MJPEG)
+## Mixed-reality streaming
 
-The program starts an MJPEG server in a background thread.
+The repository includes:
 
-* Default URL:
+```text
+unity/MJPEGStreamReader.cs
+unity/MJPEGHandler.cs
+```
 
-  * `http://<your-linux-ip>:8080/`
+These scripts provide a Unity client for receiving the MJPEG stream.
 
-## Unity 2020 (HoloLens 2) client setup
+The current HoloLens implementation displays the processed NIR stream as a **virtual video frame positioned in front of the wearer**. The image is not spatially registered with the physical environment, so the current prototype is intended as head-mounted mixed-reality / immersive remote visualization rather than a complete augmented night-vision system.
 
-This repo includes:
+The client-server architecture allows the camera and HoloLens to operate at different physical locations when both devices can communicate over the same network.
 
-* `unity/MJPEGStreamReader.cs`
-* `unity/MJPEGHandler.cs`
+During qualitative campus-network trials, the stream was successfully viewed from widely separated locations across the same WLAN. The observed end-to-end delay was approximately **3–5 s** under these network conditions. This value is an observational estimate rather than a synchronized latency measurement.
 
-### 1) Create a simple UI scene
+## Unity 2020 / HoloLens 2 setup
 
-1. Create a new Unity 2020 project.
-2. In the Scene:
+### 1. Create a UI scene
 
-   * `GameObject -> UI -> Canvas`
-   * `GameObject -> UI -> RawImage`
-3. Resize the RawImage to fill the Canvas (optional).
+1. Create a Unity 2020 project.
+2. Add:
+   - `GameObject -> UI -> Canvas`
+   - `GameObject -> UI -> RawImage`
+3. Resize the `RawImage` as needed.
 
-### 2) Add scripts
+### 2. Add the scripts
 
-1. Create a folder `Assets/Scripts/`.
-2. Copy both C# scripts into it:
+Create:
 
-   * `MJPEGStreamReader.cs`
-   * `MJPEGHandler.cs`
+```text
+Assets/Scripts/
+```
 
-### 3) Add a controller object
+and copy:
 
-1. `GameObject -> Create Empty` and name it e.g. `MJPEGClient`.
-2. Attach `MJPEGStreamReader` component to `MJPEGClient`.
-3. Drag the `RawImage` object into the `outputImage` field in Inspector.
-4. Set `streamURL` to your Linux host address, e.g.:
+```text
+MJPEGStreamReader.cs
+MJPEGHandler.cs
+```
 
-   * `http://192.168.1.25:8080/`
+into the directory.
 
-### 4) Run
+### 3. Add the client controller
 
-* Press Play in Unity Editor (for a quick test on PC).
-* For HoloLens 2:
+1. Create an empty GameObject.
+2. Attach `MJPEGStreamReader`.
+3. Assign the `RawImage` to the `outputImage` field.
+4. Set `streamURL`, for example:
 
-  * Build using UWP workflow (standard HoloLens procedure).
-  * Ensure the device is on the same LAN and can reach the Linux host.
+```text
+http://192.168.1.25:8080/
+```
 
-## Networking tips (HoloLens 2 ↔ Linux PC)
+### 4. Run
 
-Most issues are basic connectivity:
+For desktop testing:
 
-* Make sure both devices are on the **same Wi-Fi network**.
-* Confirm the Linux device IP:
+```text
+Press Play in the Unity Editor.
+```
 
-  ```bash
-  ip a
-  ```
-* Confirm port 8080 is listening:
+For HoloLens 2:
 
-  ```bash
-  ss -lntp | grep 8080
-  ```
-* If you use a firewall, allow the port (Ubuntu example):
+- build using the standard UWP/HoloLens workflow;
+- ensure the headset can reach the streaming host over the network.
 
-  ```bash
-  sudo ufw allow 8080/tcp
-  ```
-  
+## Networking
+
+Both devices must be able to communicate over the same network.
+
+Check the Linux host IP:
+
+```bash
+ip a
+```
+
+Check whether port `8080` is listening:
+
+```bash
+ss -lntp | grep 8080
+```
+
+If required, allow the port through the firewall:
+
+```bash
+sudo ufw allow 8080/tcp
+```
+
+## Reproducibility notes
+
+The enhancement methods in the current benchmark are executed sequentially on live camera input. They therefore do not process identical prerecorded frames. Small differences in scene content and automatic camera exposure may affect method-to-method comparisons.
+
+The exact sensor model and manufacturer specifications of the consumer camera are unavailable because the camera is an unbranded device.
+
+Image-quality statistics such as entropy, gradient magnitude, and Laplacian variance should not be interpreted individually as direct measures of perceptual image quality, because they may also increase due to noise amplification or oversharpening.
+
+The reported processing throughput is derived from per-frame processing time and does not represent physical camera frame rate or end-to-end streaming performance.
+
 ## License
 
-Not chosen yet.
+A license has not yet been selected.
 
 ## Citation
 
-If you use this code in academic work, please cite the associated paper.
+The associated manuscript is currently under anonymous peer review. Citation information will be added after publication.
